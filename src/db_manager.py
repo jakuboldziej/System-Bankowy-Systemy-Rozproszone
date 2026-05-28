@@ -1,6 +1,6 @@
 import sqlite3, bcrypt, os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "bank.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "data", "bank.db")
 
 
 class DBManager:
@@ -31,14 +31,15 @@ class DBManager:
                 (u, pw_hash, n, ps, role),
             )
             uid = cursor.lastrowid
+            acc_num = f"100{uid}"
             cursor.execute(
                 "INSERT INTO accounts (account_number, user_id, balance) VALUES (?, ?, 1000.0)",
-                (f"100{uid}", uid),
+                (acc_num, uid),
             )
             self.conn.commit()
-            return True
-        except:
-            return False
+            return True, acc_num
+        except Exception as e:
+            return False, str(e)
 
     def process_transfer(self, s_acc, r_acc, amt):
         cursor = self.conn.cursor()
@@ -48,10 +49,12 @@ class DBManager:
             )
             s = cursor.fetchone()
             if not s or s[0] < amt:
-                return False, "Brak srodkow"
+                return False, "Brak wystarczajacych srodkow."
+
             cursor.execute("SELECT id FROM accounts WHERE account_number = ?", (r_acc,))
             if not cursor.fetchone():
-                return False, "Odbiorca nie istnieje"
+                return False, "Odbiorca nie istnieje."
+
             cursor.execute(
                 "UPDATE accounts SET balance = balance - ? WHERE account_number = ?",
                 (amt, s_acc),
@@ -60,11 +63,37 @@ class DBManager:
                 "UPDATE accounts SET balance = balance + ? WHERE account_number = ?",
                 (amt, r_acc),
             )
+
             cursor.execute(
                 "INSERT INTO logs (account_id, operation_type, amount) VALUES (?, ?, ?)",
-                (s[1], f"TO {r_acc}", amt),
+                (s[1], f"PRZELEW DO {r_acc}", -amt),
+            )
+
+            self.conn.commit()
+            return True, "Przelew zakonczony sukcesem."
+        except:
+            self.conn.rollback()
+            return False, "Blad transakcji."
+
+    def update_user(self, target_username, new_name, new_pesel):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE users SET full_name = ?, pesel = ? WHERE username = ?",
+                (new_name, new_pesel, target_username),
             )
             self.conn.commit()
-            return True, "Sukces"
+            return True
         except:
-            return False, "Blad transakcji"
+            return False
+
+    def deactivate_user(self, target_username):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE users SET is_active = 0 WHERE username = ?", (target_username,)
+            )
+            self.conn.commit()
+            return True
+        except:
+            return False

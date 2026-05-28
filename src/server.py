@@ -1,4 +1,4 @@
-import socket, threading, json
+import socket, threading, json, bcrypt
 from db_manager import DBManager
 
 
@@ -14,11 +14,23 @@ class BankServer:
     def start(self):
         self.s.bind((self.host, self.port))
         self.s.listen(10)
+        print(f"[*] Serwer wystartowal na {self.host}:{self.port}")
 
-        print(f"[*] Serwer wystartował: {self.host}:{self.port}")
+        try:
+            self.db.register_user(
+                "admin", "admin123", "Główny Admin", "00000000000", "admin"
+            )
+            self.db.register_user(
+                "user1", "user123", "Jan Kowalski", "11111111111", "user"
+            )
+            self.db.register_user(
+                "user2", "user222", "Anna Nowak", "22222222222", "user"
+            )
+        except:
+            pass
 
         while True:
-            c, _ = self.s.accept()
+            c, addr = self.s.accept()
             threading.Thread(target=self.handle, args=(c,)).start()
 
     def handle(self, c):
@@ -37,18 +49,24 @@ class BankServer:
 
     def process(self, req):
         act = req.get("action")
+
         if act == "LOGIN":
             cursor = self.db.conn.cursor()
             cursor.execute(
-                "SELECT password_hash, role, id FROM users WHERE username = ?",
+                "SELECT password_hash, role, id, is_active FROM users WHERE username = ?",
                 (req.get("username"),),
             )
             u = cursor.fetchone()
             if u and bcrypt.checkpw(
                 req.get("password").encode("utf-8"), u[0].encode("utf-8")
             ):
+                if u[3] == 0:
+                    return {
+                        "status": "ERROR",
+                        "message": "Konto zostalo usuniete/dezaktywowane.",
+                    }
                 return {"status": "SUCCESS", "role": u[1], "user_id": u[2]}
-            return {"status": "ERROR", "message": "Bledne dane"}
+            return {"status": "ERROR", "message": "Bledne dane logowania."}
 
         with self.lock:
             if act == "TRANSFER":
@@ -56,14 +74,22 @@ class BankServer:
                     req.get("from"), req.get("to"), float(req.get("amount"))
                 )
                 return {"status": "SUCCESS" if s else "ERROR", "message": m}
+
             if act == "GET_BALANCE":
                 cursor = self.db.conn.cursor()
                 cursor.execute(
-                    "SELECT balance FROM accounts WHERE user_id = ?",
+                    "SELECT balance, account_number FROM accounts WHERE user_id = ?",
                     (req.get("user_id"),),
                 )
                 b = cursor.fetchone()
-                return {"status": "SUCCESS", "balance": b[0] if b else 0.0}
+                if b:
+                    return {
+                        "status": "SUCCESS",
+                        "balance": b[0],
+                        "account_number": b[1],
+                    }
+                return {"status": "ERROR", "message": "Nie znaleziono konta."}
+
             if act == "GET_LOGS":
                 cursor = self.db.conn.cursor()
                 if req.get("role") == "admin":
@@ -76,10 +102,28 @@ class BankServer:
                         (req.get("user_id"),),
                     )
                 return {"status": "SUCCESS", "logs": cursor.fetchall()}
-        return {"status": "ERROR"}
+
+            if act == "ADMIN_REGISTER" and req.get("role") == "admin":
+                ok, msg = self.db.register_user(
+                    req["username"], req["password"], req["full_name"], req["pesel"]
+                )
+                return {
+                    "status": "SUCCESS" if ok else "ERROR",
+                    "message": "Zarejestrowano poprawnie" if ok else msg,
+                }
+
+            if act == "ADMIN_UPDATE" and req.get("role") == "admin":
+                ok = self.db.update_user(
+                    req["target_username"], req["new_name"], req["new_pesel"]
+                )
+                return {"status": "SUCCESS" if ok else "ERROR"}
+
+            if act == "ADMIN_DEACTIVATE" and req.get("role") == "admin":
+                ok = self.db.deactivate_user(req["target_username"])
+                return {"status": "SUCCESS" if ok else "ERROR"}
+
+        return {"status": "ERROR", "message": "Nieznana akcja"}
 
 
 if __name__ == "__main__":
-    import bcrypt
-
     BankServer().start()
